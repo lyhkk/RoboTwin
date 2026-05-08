@@ -26,12 +26,17 @@ envs/curobo/*
 .vscode
 /config.json
 
+# Custom Ignores
 /*.json*
 *.txt
-policy/Your_Policy/.env        # real key — never commit
+local_videos
+docs/
+
+# Policy Specific
+policy/weights/*
+policy/LLMAgent/*
+# contains QWEN_API_KEY - NEVER COMMIT
+policy/Your_Policy/.env
+# large JSON/log files
 policy/Your_Policy/logs
 # policy/Your_Policy/.env.example is safe to commit (template only)
-local_videos
-policy/LLMAgent/*
-policy/Your_Policy/.env
-docs/
