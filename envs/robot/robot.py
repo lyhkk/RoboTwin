@@ -12,7 +12,10 @@ from copy import deepcopy
 import sapien.core as sapien
 import envs._GLOBAL_CONFIGS as CONFIGS
 from envs.utils import transforms
-from .planner import CuroboPlanner
+try:
+    from .planner import CuroboPlanner
+except ImportError:
+    CuroboPlanner = None  # curobo not available, will use mplib
 import torch.multiprocessing as mp
 
 
@@ -29,6 +32,9 @@ class Robot:
 
         self.left_js = None
         self.right_js = None
+
+        self.left_planner = None
+        self.right_planner = None
 
         left_embodiment_args = kwargs["left_embodiment_config"]
         right_embodiment_args = kwargs["right_embodiment_config"]
@@ -132,7 +138,11 @@ class Robot:
                 self.right_conn.send({"cmd": "reset"})
                 _ = self.right_conn.recv()
         else:
-            if not isinstance(self.left_planner, CuroboPlanner) or not isinstance(self.right_planner, CuroboPlanner):
+            # Guard: when CuroboPlanner is None (curobo not installed), isinstance raises TypeError
+            _has_curobo = CuroboPlanner is not None
+            if (not _has_curobo
+                    or not hasattr(self, "left_planner") or self.left_planner is None
+                    or not hasattr(self, "right_planner") or self.right_planner is None):
                 self.set_planner(scene=scene)
 
         self.init_joints()
@@ -255,6 +265,26 @@ class Robot:
         print("right ee: ", self.right_ee.get_name())
 
     def set_planner(self, scene=None):
+        # ── curobo not installed: fall back to MplibPlanner ──────────────────
+        if CuroboPlanner is None:
+            _mplib_type = "mplib_RRT"  # more robust than screw; curobo not available
+            self.communication_flag = False
+            self.left_planner = MplibPlanner(
+                self.left_urdf_path, self.left_srdf_path, self.left_move_group,
+                self.left_entity_origion_pose, self.left_entity,
+                planner_type=_mplib_type, scene=scene,
+            )
+            self.right_planner = MplibPlanner(
+                self.right_urdf_path, self.right_srdf_path, self.right_move_group,
+                self.right_entity_origion_pose, self.right_entity,
+                planner_type=_mplib_type, scene=scene,
+            )
+            # mplib_planner aliases (used by take_action TOPP path)
+            self.left_mplib_planner = self.left_planner
+            self.right_mplib_planner = self.right_planner
+            return
+        # ─────────────────────────────────────────────────────────────────────
+
         abs_left_curobo_yml_path = os.path.join(CONFIGS.ROOT_PATH, self.left_curobo_yml_path)
         abs_right_curobo_yml_path = os.path.join(CONFIGS.ROOT_PATH, self.right_curobo_yml_path)
 

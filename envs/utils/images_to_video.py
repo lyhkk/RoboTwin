@@ -15,6 +15,8 @@ def images_to_video(imgs: np.ndarray, out_path: str, fps: float = 30.0, is_rgb: 
         pixel_format = "rgb24" if is_rgb else "bgr24"
     else:
         pixel_format = "rgba"
+    env = os.environ.copy()
+    env.pop('LD_LIBRARY_PATH', None)
     ffmpeg = subprocess.Popen(
         [
             "ffmpeg",
@@ -40,6 +42,7 @@ def images_to_video(imgs: np.ndarray, out_path: str, fps: float = 30.0, is_rgb: 
             f"{out_path}",
         ],
         stdin=subprocess.PIPE,
+        env=env
     )
     ffmpeg.stdin.write(imgs.tobytes())
     ffmpeg.stdin.close()

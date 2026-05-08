@@ -27,4 +27,11 @@ envs/curobo/*
 /config.json
 
 /*.json*
-/*.txt
+*.txt
+policy/Your_Policy/.env        # real key — never commit
+policy/Your_Policy/logs
+# policy/Your_Policy/.env.example is safe to commit (template only)
+local_videos
+policy/LLMAgent/*
+policy/Your_Policy/.env
+docs/

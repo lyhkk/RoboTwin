@@ -402,6 +402,8 @@ class MplibPlanner:
         use_attach=False,
         arms_tag=None,
         log=True,
+        constraint_pose=None,   # accepted for API compat with CuroboPlanner; ignored by mplib
+        **kwargs,
     ):
         """
         Interpolative planning with screw motion.
@@ -421,6 +423,34 @@ class MplibPlanner:
             result = self.plan_screw(now_qpos, target_pose, use_point_cloud, use_attach, arms_tag, log)
 
         return result
+
+    def plan_batch(
+        self,
+        now_qpos,
+        target_pose_list,
+        constraint_pose=None,
+        arms_tag=None,
+        **kwargs,
+    ):
+        """
+        CuroboPlanner-compatible batch planner.
+        Tries each target pose in order; stops early once one succeeds.
+        Returns {"status": [...], "position": [...], "velocity": [...]}
+        """
+        n = len(target_pose_list)
+        statuses  = ["Fail"] * n
+        positions = [np.array([])] * n
+        velocities = [np.array([])] * n
+
+        for i, target_pose in enumerate(target_pose_list):
+            r = self.plan_path(now_qpos, target_pose, arms_tag=arms_tag, log=False)
+            statuses[i]   = r.get("status", "Fail")
+            positions[i]  = r.get("position", np.array([]))
+            velocities[i] = r.get("velocity", np.array([]))
+            if statuses[i] == "Success":
+                break   # stop as soon as one valid pose is found
+
+        return {"status": statuses, "position": positions, "velocity": velocities}
 
     def plan_grippers(self, now_val, target_val):
         num_step = 200  # TODO

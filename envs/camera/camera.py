@@ -32,12 +32,15 @@ try:
 
         return sampled_points, indices
 
-except:
-    print("missing pytorch3d")
+except Exception as e:
+    print(f"pytorch3d.ops import failed: {e}. Using Random sampling fallback for fps.")
 
     def fps(points, num_points=1024, use_cuda=True):
-        print("fps error: missing pytorch3d")
-        exit()
+        # Fallback to random sampling which is fast and doesn't require extra dependencies
+        if len(points) <= num_points:
+            return points, np.arange(len(points))
+        indices = np.random.choice(len(points), num_points, replace=False)
+        return points[indices], indices
 
 
 class Camera:
