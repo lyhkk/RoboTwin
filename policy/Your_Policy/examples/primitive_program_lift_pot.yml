@@ -1,0 +1,9 @@
+# Config for the Phase 2B no-LLM primitive-program smoke test.
+# Use with:  bash policy/Your_Policy/examples/eval_primitive_program_lift_pot.sh
+policy_name: null
+task_name: null
+task_config: null
+ckpt_setting: null
+seed: null
+instruction_type: unseen
+skip_expert_check: false

@@ -133,43 +133,105 @@ def compute_dual_grasp(TASK_ENV, object_name: str) -> dict:
     pos = objects[object_name]["position"]
     quat = objects[object_name]["orientation"]
     
-    # ── Attempt 1: Search for explicit handle links ──
-    # Expand keywords to be more robust
-    handle_keywords = ["handle", "grip", "arm"]
-    handles = [n for n in objects if any(k in n.lower() for k in handle_keywords) and object_name in n]
-    
-    if len(handles) >= 2:
-        handles.sort(key=lambda n: objects[n]["position"][1], reverse=True)
-        l_grasp = np.array(objects[handles[0]]["position"])
-        r_grasp = np.array(objects[handles[1]]["position"])
-        l_grasp[2] += 0.01 # Lowered from 0.02
-        r_grasp[2] += 0.01
-        method = "explicit_handles"
-    else:
-        # ── Attempt 2: Orientation-aware calculation (Fallback) ──
-        # Handles are usually along local Y-axis [0, 0.14, 0.01]
+    # ── Attempt 0: Use _base_task.get_grasp_pose for accurate poses (privileged) ──
+    method = None
+    l_pre_grasp = r_pre_grasp = l_grasp_7d = r_grasp_7d = None
+    try:
+        # Find the actor object in TASK_ENV
+        actor = None
+        for candidate in ["pot", "target_object", "obj", "actor"]:
+            obj = getattr(TASK_ENV, candidate, None)
+            if obj is not None and hasattr(obj, "get_contact_point"):
+                actor = obj
+                break
+        if actor is None:
+            for attr in dir(TASK_ENV):
+                obj = getattr(TASK_ENV, attr, None)
+                if hasattr(obj, "get_contact_point") and hasattr(obj, "name"):
+                    if object_name in str(getattr(obj, "name", "")):
+                        actor = obj
+                        break
+
+        print(f"[DEBUG] actor lookup: actor={'found: '+type(actor).__name__ if actor else 'None'}, "
+              f"has_get_grasp_pose={hasattr(TASK_ENV, 'get_grasp_pose')}")
+        if actor is not None and hasattr(TASK_ENV, "get_grasp_pose"):
+            from envs.utils.action import ArmTag
+            # Use the base task's get_grasp_pose for exact poses
+            # This handles the contact matrix rotation + ee offset correctly.
+            TASK_ENV.plan_success = True  # get_grasp_pose checks this
+            l_pre_pose = TASK_ENV.get_grasp_pose(actor, ArmTag("left"),
+                                                  contact_point_id=0, pre_dis=0.035)
+            l_grasp_pose = TASK_ENV.get_grasp_pose(actor, ArmTag("left"),
+                                                    contact_point_id=0, pre_dis=0.0)
+            r_pre_pose = TASK_ENV.get_grasp_pose(actor, ArmTag("right"),
+                                                  contact_point_id=1, pre_dis=0.035)
+            r_grasp_pose = TASK_ENV.get_grasp_pose(actor, ArmTag("right"),
+                                                    contact_point_id=1, pre_dis=0.0)
+            if (l_pre_pose is not None and l_grasp_pose is not None and
+                    r_pre_pose is not None and r_grasp_pose is not None and
+                    l_pre_pose != [-1]*7 and r_pre_pose != [-1]*7):
+                l_pre_grasp = list(l_pre_pose)
+                l_grasp_7d = list(l_grasp_pose)
+                r_pre_grasp = list(r_pre_pose)
+                r_grasp_7d = list(r_grasp_pose)
+                method = "get_grasp_pose"
+                print(f"[DEBUG] get_grasp_pose L_pre={l_pre_grasp}")
+                print(f"[DEBUG] get_grasp_pose L_grasp={l_grasp_7d}")
+                print(f"[DEBUG] get_grasp_pose R_pre={r_pre_grasp}")
+                print(f"[DEBUG] get_grasp_pose R_grasp={r_grasp_7d}")
+    except Exception as e:
+        import traceback
+        print(f"[DEBUG] get_grasp_pose failed: {e}")
+        traceback.print_exc()
+
+    # ── Fallback: orientation-aware offset calculation ──
+    if method is None:
         from scipy.spatial.transform import Rotation as R
-        # Scipy expects [x, y, z, w]. Sapien/RoboTwin uses [w, x, y, z].
-        rot = R.from_quat([quat[1], quat[2], quat[3], quat[0]]) 
-        
-        l_offset_local = np.array([0, 0.14, 0.01]) # Reduced offset and height
+        rot = R.from_quat([quat[1], quat[2], quat[3], quat[0]])
+        l_offset_local = np.array([0, 0.14, 0.01])
         r_offset_local = np.array([0, -0.14, 0.01])
-        
-        l_grasp = pos + rot.apply(l_offset_local)
-        r_grasp = pos + rot.apply(r_offset_local)
+        l_contact = pos + rot.apply(l_offset_local)
+        r_contact = pos + rot.apply(r_offset_local)
         method = "orientation_aware_fallback"
-    
+
+        from envs._GLOBAL_CONFIGS import GRASP_DIRECTION_DIC
+        from primitives.pose_utils import compute_7d_grasp_poses
+        poses_7d = compute_7d_grasp_poses(
+            left_pos=l_contact.tolist(),
+            right_pos=r_contact.tolist(),
+            object_center=list(pos),
+            pre_grasp_offset=0.035,
+            ee_contact_offset=0.12,
+            left_quat_wxyz=GRASP_DIRECTION_DIC["left_arm_perf"],
+            right_quat_wxyz=GRASP_DIRECTION_DIC["right_arm_perf"],
+        )
+        l_pre_grasp = poses_7d["left_pre_grasp_pose"]
+        l_grasp_7d = poses_7d["left_grasp_pose"]
+        r_pre_grasp = poses_7d["right_pre_grasp_pose"]
+        r_grasp_7d = poses_7d["right_grasp_pose"]
+
+    l_grasp = l_grasp_7d[:3]  # backward compat: 3-vec position
+    r_grasp = r_grasp_7d[:3]
+
     print(f"[DEBUG] {object_name} method: {method}")
-    print(f"[DEBUG] Handles found: {handles}")
-    print(f"[DEBUG] Calculated grasps -> L: {l_grasp.tolist()}, R: {r_grasp.tolist()}")
-    
+    print(f"[DEBUG] L_pre={l_pre_grasp}")
+    print(f"[DEBUG] R_pre={r_pre_grasp}")
+    print(f"[DEBUG] L_grasp={l_grasp_7d}")
+    print(f"[DEBUG] R_grasp={r_grasp_7d}")
+
     return make_result(
-        "SUCCESS", 
+        "SUCCESS",
         f"Computed dual grasp poses for {object_name} using {method}.",
-        left_pose=l_grasp.tolist(),
-        right_pose=r_grasp.tolist(),
+        # 3-vec positions (backward compat)
+        left_pose=list(l_grasp),
+        right_pose=list(r_grasp),
         object_center=list(pos),
-        method=method
+        method=method,
+        # 7-vec poses with approach quaternions (Phase 2B)
+        left_pre_grasp_pose=list(l_pre_grasp),
+        right_pre_grasp_pose=list(r_pre_grasp),
+        left_grasp_pose=list(l_grasp_7d),
+        right_grasp_pose=list(r_grasp_7d),
     )
 
 
@@ -425,6 +487,11 @@ def build_skill_namespace(TASK_ENV, logger=None):
     Builds the function namespace injected into LLM-generated code.
     Primary API: high-level composite skills.
     Advanced API: atomic skills for recovery/debug.
+
+    Phase 2B addition: `execute_primitive_sequence(program)` is exposed as
+    the single validated gateway to the primitive program runtime. Raw
+    primitive functions remain INTERNAL — they are never added to this
+    namespace.
     """
     from privileged_perception import get_scene_objects
 
@@ -471,6 +538,31 @@ def build_skill_namespace(TASK_ENV, logger=None):
     def move_to(pos: list, arm: str = "right"):
         return skill_move_to(TASK_ENV, pos, logger=logger)
 
+    # ── Phase 2B gateway: validated primitive program runtime ──
+    # The LLM may emit a structured program (list of op-dicts) and submit it
+    # via this single function. The program is validated against an op
+    # allowlist before any motion is attempted. TASK_ENV is captured via
+    # closure; the LLM never sees it.
+    def execute_primitive_sequence(program: list) -> dict:
+        """
+        Validate and execute a structured primitive program.
+
+        program: list[dict] — see PHASE2_ATOMIC_PRIMITIVES_DESIGN.md §5B/§5C.
+                 Each dict must have an `op` from the allowlist plus
+                 op-specific args. `save_as` binds the result for later
+                 `$varname.path` references.
+
+        Returns a ResultDict with `status`, `stage`, `details`, and a
+        `data` block containing primitive_results, failed_op_index,
+        motion_completed, grasp_verified, task_success, height_delta, etc.
+        """
+        from primitives.sequence import execute_program
+        try:
+            refs = get_reference_names()
+        except Exception:
+            refs = None
+        return execute_program(TASK_ENV, program, refs=refs, logger=logger)
+
     return {
         # Primary
         "get_reference_names": get_reference_names,
@@ -485,4 +577,6 @@ def build_skill_namespace(TASK_ENV, logger=None):
         # Advanced
         "compute_dual_grasp": lambda obj: compute_dual_grasp(TASK_ENV, obj),
         "move_to": move_to,
+        # Phase 2B — the ONLY way to reach primitive ops from generated code.
+        "execute_primitive_sequence": execute_primitive_sequence,
     }

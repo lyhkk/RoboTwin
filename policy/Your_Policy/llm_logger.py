@@ -43,7 +43,7 @@ class EpisodeLogger:
                 "subtasks": [],
                 "latency_s": 0,
             },
-            "steps": [], # Each step: {subtask, executor: {prompt, code, latency}, skills: [], result, feedback}
+            "steps": [], # Each step: {subtask, executor/latest, executor_calls, skills, result, feedback}
             "outcome": None,
             "failure_reason": None,
             "total_steps": 0,
@@ -77,6 +77,7 @@ class EpisodeLogger:
             "idx": len(self.log["steps"]),
             "subtask": subtask,
             "executor": None,
+            "executor_calls": [],
             "skills": [],
             "success": False,
             "feedback": None,
@@ -85,16 +86,22 @@ class EpisodeLogger:
         self.log["steps"].append(step_entry)
         self._flush()
 
-    def log_executor_call(self, prompt: str, code: str, latency_s: float, model: str):
+    def log_executor_call(self, prompt: str, code: str, latency_s: float, model: str,
+                          schema: dict = None, executor_type: str = "cap"):
         if not self.log["steps"]: return
         step = self.log["steps"][-1]
-        step["executor"] = {
+        entry = {
             "model": model,
+            "executor_type": executor_type,
             "prompt": prompt,
             "code": code,
             "latency_s": round(latency_s, 3),
             "timestamp": datetime.now().isoformat(),
         }
+        if schema is not None:
+            entry["schema"] = schema
+        step["executor"] = entry
+        step.setdefault("executor_calls", []).append(entry)
         self._flush()
         print(f"[LLM:Executor] {latency_s:.1f}s ✓")
 

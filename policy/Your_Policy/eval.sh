@@ -22,6 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROBOTWIN_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 cd "${ROBOTWIN_ROOT}" || { echo "[ERROR] Cannot cd to RoboTwin root"; exit 1; }
+export PYTHONPATH="${ROBOTWIN_ROOT}:${PYTHONPATH}"
 
 echo -e "\033[33m[LLM Agent] Root: ${ROBOTWIN_ROOT}\033[0m"
 

@@ -1,4 +1,4 @@
-# Basic experiment configuration (keep unchanged)
+# Basic experiment configuration (overridden by CLI --overrides)
 policy_name: null
 task_name: null
 task_config: null
@@ -6,4 +6,36 @@ ckpt_setting: null
 seed: null
 instruction_type: unseen
 
-# Add Parameters You Need
+# ── ALRM LLM Agent Configuration ────────────────────────────────
+# These parameters configure the Agentic Language Reasoning Model.
+# API key is intentionally omitted — set QWEN_API_KEY in .env
+
+# Model / API endpoint
+llm_model: qwen3.6-plus
+llm_base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+
+# Generation parameters
+temperature: 0.1
+max_tokens: 1024
+
+# Agent loop control
+max_turns: 10            # maximum ReAct iterations per episode step
+# Note: max_turns is the agent reasoning/action loop limit
+# Note: step_lim / take_action_cnt is the RoboTwin eval loop budget (physics steps)
+max_retries: 0           # executor code-exec retries (0 = no retry)
+
+# Executor mode
+# cap: legacy Code-as-Policy Python executor
+# schema: task-specific JSON schema -> primitive program compiler/runtime
+# hierarchical_schema: Planner sees only subtask observations; Executor queries env and emits primitive programs
+executor_mode: cap
+schema_max_retries: 1
+hierarchical_executor_max_attempts: 10
+
+# Logging
+log_dir: logs            # relative to policy directory
+verbose: true
+
+# Perception
+# Note: "privileged" = Phase 1 (sim state access). This is the only implemented mode. Vision mode is Phase 3+.
+perception_mode: privileged    # "privileged" = Phase 1 (sim state access)

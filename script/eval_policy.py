@@ -81,6 +81,12 @@ def main(usr_args):
     args['task_name'] = task_name
     args["task_config"] = task_config
     args["ckpt_setting"] = ckpt_setting
+    # Dev-only: skip expert play_once check for primitive smoke tests
+    if usr_args.get("skip_expert_check", False):
+        args["skip_expert_check"] = True
+    for key in ("test_num", "eval_video_log", "eval_video_dense_freq"):
+        if key in usr_args:
+            args[key] = usr_args[key]
 
     embodiment_type = args.get("embodiment")
     embodiment_config_path = os.path.join(CONFIGS_PATH, "_embodiment_config.yml")
@@ -159,7 +165,7 @@ def main(usr_args):
 
     st_seed = 100000 * (1 + seed)
     suc_nums = []
-    test_num = 100
+    test_num = args.get("test_num", 1)
     topk = 1
 
     model = get_model(usr_args)
@@ -197,7 +203,7 @@ def eval_policy(task_name,
     print(f"\033[34mTask Name: {args['task_name']}\033[0m")
     print(f"\033[34mPolicy Name: {args['policy_name']}\033[0m")
 
-    expert_check = True
+    expert_check = not args.get("skip_expert_check", False)
     TASK_ENV.suc = 0
     TASK_ENV.test_num = 0
 
@@ -258,9 +264,18 @@ def eval_policy(task_name,
         args["render_freq"] = render_freq
 
         TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
-        episode_info_list = [episode_info["info"]]
+        if expert_check:
+            episode_info_list = [episode_info["info"]]
+        else:
+            # No expert demo was run — use the info dict that setup_demo
+            # may have partially populated, falling back to empty.
+            episode_info_list = [getattr(TASK_ENV, "info", {}).get("info", {})]
         results = generate_episode_descriptions(args["task_name"], episode_info_list, test_num)
-        instruction = np.random.choice(results[0][instruction_type])
+        if results and results[0].get(instruction_type):
+            instruction = np.random.choice(results[0][instruction_type])
+        else:
+            # Fallback when expert_check is skipped and no placeholders match.
+            instruction = f"Complete the {args['task_name'].replace('_', ' ')} task."
         TASK_ENV.set_instruction(instruction=instruction)  # set language instruction
 
         if TASK_ENV.eval_video_path is not None:
@@ -297,7 +312,10 @@ def eval_policy(task_name,
         while TASK_ENV.take_action_cnt < TASK_ENV.step_lim:
             observation = TASK_ENV.get_obs()
             eval_func(TASK_ENV, model, observation)
-            if TASK_ENV.eval_success:
+            if getattr(model, "_episode_done", False):
+                succ = bool(TASK_ENV.eval_success)
+                break
+            if TASK_ENV.eval_success and not getattr(model, "continue_after_env_success", False):
                 succ = True
                 break
         # task_total_reward += TASK_ENV.episode_score

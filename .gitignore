@@ -40,3 +40,4 @@ policy/Your_Policy/.env
 # large JSON/log files
 policy/Your_Policy/logs
 # policy/Your_Policy/.env.example is safe to commit (template only)
+evaluation_results

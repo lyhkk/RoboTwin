@@ -98,6 +98,8 @@ class Base_Task(gym.Env):
         self.now_obs = {}
         self.take_action_cnt = 0
         self.eval_video_path = kwags.get("eval_video_save_dir", None)
+        self.eval_video_dense_freq = max(1, int(kwags.get("eval_video_dense_freq", 2)))
+        self._eval_video_dense_segment_cnt = 0
 
         self.save_freq = kwags.get("save_freq")
         self.world_pcd = None
@@ -575,6 +577,32 @@ class Base_Task(gym.Env):
     def _set_eval_video_ffmpeg(self, ffmpeg):
         self.eval_video_ffmpeg = ffmpeg
 
+    def _write_eval_video_frame(self, refresh_camera=False):
+        if self.eval_video_path is None or not hasattr(self, "eval_video_ffmpeg"):
+            return
+
+        frame = None
+        if not refresh_camera:
+            try:
+                frame = self.now_obs["observation"]["head_camera"]["rgb"]
+            except (KeyError, TypeError):
+                frame = None
+
+        if frame is None:
+            self.cameras.update_picture()
+            rgb = self.cameras.get_rgb()
+            frame = rgb["head_camera"]["rgb"]
+
+        self.eval_video_ffmpeg.stdin.write(frame.tobytes())
+
+    def _write_eval_video_dense_segment_frame(self):
+        if self.eval_video_path is None:
+            return
+        self._eval_video_dense_segment_cnt += 1
+        if self._eval_video_dense_segment_cnt % self.eval_video_dense_freq == 0:
+            self._update_render()
+            self._write_eval_video_frame(refresh_camera=True)
+
     def close_env(self, clear_cache=False):
         if clear_cache:
             # for actor in self.scene.get_all_actors():
@@ -880,6 +908,7 @@ class Base_Task(gym.Env):
 
         if save_freq != None:
             self._take_picture()
+        self._write_eval_video_dense_segment_frame()
 
     def move(
         self,
@@ -1470,9 +1499,9 @@ class Base_Task(gym.Env):
             if save_freq != None and control_idx % save_freq == 0:
                 self._update_render()
                 self._take_picture()
-
         if save_freq != None:
             self._take_picture()
+        self._write_eval_video_dense_segment_frame()
 
         return True  # TODO: maybe need try error
 
@@ -1482,7 +1511,7 @@ class Base_Task(gym.Env):
 
         eval_video_freq = 1  # fixed
         if (self.eval_video_path is not None and self.take_action_cnt % eval_video_freq == 0):
-            self.eval_video_ffmpeg.stdin.write(self.now_obs["observation"]["head_camera"]["rgb"].tobytes())
+            self._write_eval_video_frame()
 
         self.take_action_cnt += 1
         print(f"step: \033[92m{self.take_action_cnt} / {self.step_lim}\033[0m", end="\r")
@@ -1658,7 +1687,7 @@ class Base_Task(gym.Env):
                 self.eval_success = True
                 self.get_obs() # update obs
                 if (self.eval_video_path is not None):
-                    self.eval_video_ffmpeg.stdin.write(self.now_obs["observation"]["head_camera"]["rgb"].tobytes())
+                    self._write_eval_video_frame()
                 return
 
         self._update_render()
