@@ -43,6 +43,10 @@ from hierarchical_executor import HierarchicalSchemaExecutor
 from schema_executor import SchemaExecutor
 from skill_library import build_skill_namespace
 
+# Lazy import: TaPExecutor depends on primitives.motion which needs envs/SAPIEN.
+# Imported at use-site in _execute() to avoid import failure in test environments.
+# from tap_executor import TaPExecutor
+
 
 # ── Config (fallback defaults — overridden by YAML config via get_model) ──
 QWEN_BASE_URL = os.environ.get(
@@ -154,6 +158,18 @@ Rules:
 """
 
 
+# ── Helpers ──────────────────────────────────────────────────────────────
+
+def _as_bool(v) -> bool:
+    """Parse a value that may be bool, str, or int into a Python bool.
+
+    Handles CLI string overrides like ``"False"`` or ``"true"`` correctly.
+    """
+    if isinstance(v, bool):
+        return v
+    return str(v).lower() in ("1", "true", "yes", "on")
+
+
 # ── LLM Client ───────────────────────────────────────────────────────────
 
 class QwenClient:
@@ -189,7 +205,12 @@ class QwenClient:
 class ALRMAgent:
     def __init__(self, llm_client: QwenClient, max_turns: int = 10,
                  executor_mode: str = "cap", schema_max_retries: int = 1,
-                 hierarchical_executor_max_attempts: int = 10):
+                 hierarchical_executor_max_attempts: int = 10,
+                 tap_max_actions: int = 20,
+                 tap_vision_model: str = None,
+                 tap_use_vision_input: bool = False,
+                 tap_use_perception: bool = False,
+                 tap_perception_backend: str = "sim"):
         self.llm = llm_client
         self.episode_idx = 0
         self.logger: EpisodeLogger = None
@@ -203,7 +224,12 @@ class ALRMAgent:
         self._executor_mode = executor_mode
         self._schema_max_retries = schema_max_retries
         self._hierarchical_executor_max_attempts = int(hierarchical_executor_max_attempts)
-        self.continue_after_env_success = executor_mode == "hierarchical_schema"
+        self._tap_max_actions = int(tap_max_actions)
+        self._tap_vision_model = tap_vision_model
+        self._tap_use_vision_input = bool(tap_use_vision_input)
+        self._tap_use_perception = bool(tap_use_perception)
+        self._tap_perception_backend = str(tap_perception_backend or "sim")
+        self.continue_after_env_success = executor_mode in ("hierarchical_schema", "tap")
 
     def new_episode(self, task_name: str, config_name: str):
         self._task_name = task_name
@@ -232,7 +258,7 @@ class ALRMAgent:
         if self.logger.log["instruction"] is None:
             self.logger.log_instruction(instruction)
 
-        if self._executor_mode == "hierarchical_schema":
+        if self._executor_mode in ("hierarchical_schema", "tap"):
             scene_desc = None
         else:
             for _ in range(10):
@@ -248,7 +274,7 @@ class ALRMAgent:
             self._episode_done = True
             return True
 
-        if self._executor_mode == "hierarchical_schema":
+        if self._executor_mode in ("hierarchical_schema", "tap"):
             action = self._plan_hierarchical(instruction)
         else:
             action = self._plan(instruction, scene_desc)
@@ -269,10 +295,10 @@ class ALRMAgent:
 
         if '"reason": "expert_unreachable_seed"' in feedback:
             self._episode_done = True
-        if self._executor_mode == "hierarchical_schema" and not success:
+        if self._executor_mode in ("hierarchical_schema", "tap") and not success:
             self._episode_done = True
 
-        env_success_done = TASK_ENV.eval_success and self._executor_mode != "hierarchical_schema"
+        env_success_done = TASK_ENV.eval_success and self._executor_mode not in ("hierarchical_schema", "tap")
         if env_success_done or self._turn >= self._step_limit or TASK_ENV.take_action_cnt >= TASK_ENV.step_lim:
             self._episode_done = True
 
@@ -380,6 +406,25 @@ class ALRMAgent:
             self.logger.log_step_result(success, feedback)
             return success, feedback
 
+        if self._executor_mode == "tap":
+            from tap_executor import TaPExecutor
+            executor = TaPExecutor(
+                self.llm,
+                logger=self.logger,
+                max_actions=self._tap_max_actions,
+                use_vision=self._tap_use_vision_input,
+                vision_model=self._tap_vision_model,
+                use_perception=self._tap_use_perception,
+                perception_backend=self._tap_perception_backend,
+            )
+            success, feedback = executor.execute(
+                action=action,
+                TASK_ENV=TASK_ENV,
+                planner_history=self._history,
+            )
+            self.logger.log_step_result(success, feedback)
+            return success, feedback
+
         if self._executor_mode == "schema":
             executor = SchemaExecutor(
                 self.llm,
@@ -477,10 +522,15 @@ def get_model(usr_args: dict) -> ALRMAgent:
         usr_args.get("hierarchical_executor_max_attempts", 10)
     )
     verbose = usr_args.get("verbose", True)
-    if executor_mode not in ("cap", "schema", "hierarchical_schema"):
+    tap_max_actions = int(usr_args.get("tap_max_actions", 20))
+    tap_vision_model = usr_args.get("tap_vision_model") or None
+    tap_use_vision_input = _as_bool(usr_args.get("tap_use_vision_input", False))
+    tap_use_perception = _as_bool(usr_args.get("tap_use_perception", False))
+    tap_perception_backend = usr_args.get("tap_perception_backend") or "sim"
+    if executor_mode not in ("cap", "schema", "hierarchical_schema", "tap"):
         raise ValueError(
-            "executor_mode must be 'cap', 'schema', or "
-            f"'hierarchical_schema', got {executor_mode!r}"
+            "executor_mode must be 'cap', 'schema', 'hierarchical_schema', "
+            f"or 'tap', got {executor_mode!r}"
         )
 
     llm = QwenClient(model=model_name, base_url=base_url,
@@ -491,6 +541,11 @@ def get_model(usr_args: dict) -> ALRMAgent:
         executor_mode=executor_mode,
         schema_max_retries=schema_max_retries,
         hierarchical_executor_max_attempts=hierarchical_executor_max_attempts,
+        tap_max_actions=tap_max_actions,
+        tap_vision_model=tap_vision_model,
+        tap_use_vision_input=tap_use_vision_input,
+        tap_use_perception=tap_use_perception,
+        tap_perception_backend=tap_perception_backend,
     )
     if verbose:
         print(f"[LLMAgent] Initialized. Model={model_name} | MaxTurns={max_turns}")

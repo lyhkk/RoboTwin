@@ -28,9 +28,26 @@ max_retries: 0           # executor code-exec retries (0 = no retry)
 # cap: legacy Code-as-Policy Python executor
 # schema: task-specific JSON schema -> primitive program compiler/runtime
 # hierarchical_schema: Planner sees only subtask observations; Executor queries env and emits primitive programs
+# tap: Tool-as-Policy — Executor picks ONE tool per turn with text observation feedback (max 20 per subtask)
 executor_mode: cap
 schema_max_retries: 1
 hierarchical_executor_max_attempts: 10
+
+# TaP configuration
+tap_max_actions: 20              # max tool calls per TaP subtask
+tap_model: null                  # inherit QWEN_MODEL by default; override to use a different model for TaP executor
+tap_vision_model: null           # v1.5: qwen3-vl-plus or similar VL model
+tap_use_vision_input: false      # false = text-only (v1); true = pass snapshot images to LLM (requires VL model)
+# v2 perception — 3D scene understanding via SAPIEN segmentation + sim depth.
+# false (default) → byte-identical to v1/v1.5 behaviour.
+# true            → auto-attaches scene_perception.objects[name] to every
+#                   observation after resolve_reference(name) is called, and
+#                   registers 5 new tools (3 perception, 2 action).
+# May be combined with tap_use_vision_input.
+tap_use_perception: false
+# Backend selector for VisionPerception.  Phase 1 ships "sim" only.
+# Phase 2 will add "qwen-vl", "molmo", "grounded-sam" (see docs).
+tap_perception_backend: sim
 
 # Logging
 log_dir: logs            # relative to policy directory

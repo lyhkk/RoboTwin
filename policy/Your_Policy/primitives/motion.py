@@ -19,7 +19,9 @@ See examples/primitive_lift_pot.py for the recommended pattern.
 
 from typing import Optional, Sequence
 
-from envs.utils.action import ArmTag
+import numpy as np
+
+from envs.utils.action import Action, ArmTag
 
 from .result import (
     SUCCESS, FAILED, STAGE_MOTION,
@@ -41,6 +43,18 @@ def _safe_ee_pose(TASK_ENV, arm: str):
     """Return the current EE pose for `arm`, or None on failure."""
     r = get_gripper_pose(TASK_ENV, arm)
     return r["data"].get("pose") if r["status"] == SUCCESS else None
+
+
+def _quat_mul_wxyz(a: Sequence[float], b: Sequence[float]) -> np.ndarray:
+    """Hamilton product of two wxyz quaternions: ``a * b``."""
+    aw, ax, ay, az = [float(v) for v in a]
+    bw, bx, by, bz = [float(v) for v in b]
+    return np.array([
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    ], dtype=np.float64)
 
 
 def _validate_target_pose(target_pose: Sequence[float]) -> Optional[str]:
@@ -129,6 +143,94 @@ def move_delta(TASK_ENV, arm: str, dx: float = 0.0, dy: float = 0.0, dz: float =
         f"{arm} arm displaced by [{dx:.3f}, {dy:.3f}, {dz:.3f}]." if ok
         else f"{arm} arm displacement motion planning failed.",
         arm=arm, delta=[dx, dy, dz],
+        ee_before=ee_before, ee_after=ee_after,
+        plan_success=ok, motion_completed=ok, sim_step=sim_step,
+    )
+
+
+# ── Single-arm rotate-in-place (position-hold, world-axis) ───────────────
+
+def rotate_delta(TASK_ENV, arm: str,
+                 axis_world: Sequence[float], angle_deg: float) -> dict:
+    """
+    Rotate the end-effector around a world-frame axis by ``angle_deg``,
+    keeping its xyz position fixed (cuRobo PoseCostMetric constraint).
+
+    The motion-planning, IK, and trajectory generation are entirely cuRobo's
+    responsibility — this primitive only computes the target quaternion and
+    hands a 7-DoF target plus ``constraint_pose=[1,1,1,0,0,0]`` to
+    ``TASK_ENV.move``.  No new motion algorithm is introduced.
+    """
+    if arm not in ("left", "right"):
+        return make_primitive_result(
+            "rotate_delta", FAILED,
+            f"arm must be 'left' or 'right', got {arm!r}",
+            arm=arm, plan_success=False,
+        )
+
+    axis = np.asarray(axis_world, dtype=np.float64)
+    if axis.size != 3:
+        return make_primitive_result(
+            "rotate_delta", FAILED,
+            f"axis_world must be length 3, got {axis.size}",
+            arm=arm, axis_world=list(axis_world), plan_success=False,
+        )
+    axis_norm = float(np.linalg.norm(axis))
+    if axis_norm < 1e-9:
+        return make_primitive_result(
+            "rotate_delta", FAILED, "axis_world is zero-length.",
+            arm=arm, axis_world=list(axis_world), plan_success=False,
+        )
+    axis_unit = axis / axis_norm
+
+    ee_before = _safe_ee_pose(TASK_ENV, arm)
+    if ee_before is None or len(ee_before) != 7:
+        return make_primitive_result(
+            "rotate_delta", FAILED, "Failed to read current ee pose.",
+            arm=arm, axis_world=list(axis_world), plan_success=False,
+        )
+    cur_xyz = list(ee_before[:3])
+    cur_quat = list(ee_before[3:7])
+
+    half = float(np.deg2rad(float(angle_deg))) * 0.5
+    dq = np.array(
+        [np.cos(half), *(np.sin(half) * axis_unit)],
+        dtype=np.float64,
+    )
+    new_quat = _quat_mul_wxyz(dq, cur_quat)
+    target_pose = cur_xyz + new_quat.tolist()
+
+    # Build Action with constraint_pose in its args.  TASK_ENV.move() reads
+    # ``action.args.get("constraint_pose")`` (envs/_base_task.py:959, 976, 987)
+    # and forwards it to cuRobo's PoseCostMetric (hold xyz, free rotation).
+    action = Action(
+        _arm_tag(arm), "move",
+        target_pose=target_pose,
+        constraint_pose=[1, 1, 1, 0, 0, 0],
+    )
+
+    TASK_ENV.plan_success = True
+    try:
+        TASK_ENV.move((_arm_tag(arm), [action]))
+    except Exception as e:
+        return make_primitive_result(
+            "rotate_delta", FAILED, f"env.move raised: {e}",
+            arm=arm, axis_world=list(axis_world), angle_deg=float(angle_deg),
+            target_pose=target_pose,
+            ee_before=ee_before, ee_after=_safe_ee_pose(TASK_ENV, arm),
+            plan_success=False,
+        )
+    ok = bool(TASK_ENV.plan_success)
+    ee_after = _safe_ee_pose(TASK_ENV, arm)
+    sim_step = int(getattr(TASK_ENV, "take_action_cnt", -1))
+    return make_primitive_result(
+        "rotate_delta", SUCCESS if ok else FAILED,
+        (f"{arm} ee rotated {angle_deg:.1f}° around world axis "
+         f"[{axis_unit[0]:.3f}, {axis_unit[1]:.3f}, {axis_unit[2]:.3f}]."
+         if ok else
+         f"{arm} ee rotate-in-place planning failed."),
+        arm=arm, axis_world=axis_unit.tolist(), angle_deg=float(angle_deg),
+        target_pose=target_pose,
         ee_before=ee_before, ee_after=ee_after,
         plan_success=ok, motion_completed=ok, sim_step=sim_step,
     )
